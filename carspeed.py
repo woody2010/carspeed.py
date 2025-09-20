@@ -1,24 +1,16 @@
-# CarSpeed Version 3.0
+# CarSpeed Version 4.0  Updated to work with Picamera2 amd 64 bit Rasp Pi OS
 
 # import the necessary packages
-from picamera.array import PiRGBArray
-from picamera import PiCamera
+from picamera2 import Picamera2
 import time
 import math
 import datetime
-import os
 import cv2
-# import paho.mqtt.client as mqtt
+import os
+#import paho.mqtt.client as mqtt
 import numpy as np
 import argparse
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
-## create folders for data storage
-if not os.path.exists('images'):
-    os.mkdir('images')
-if not os.path.exists('data'):
-    os.mkdir('data')
 
 # place a prompt on the displayed image
 def prompt_on_image(txt):
@@ -41,19 +33,21 @@ def secs_diff(endTime, begTime):
 # record speed in .csv format
 def record_speed(res):
     global csvfileout
-    f = open(csvfileout, 'a')
-    f.write(res+"\n")
-    f.close
+    try: 
+        with open(csvfileout, 'a') as f:
+            f.write(res+"\n")
+    except Exception as e:
+        print(f"Errorwriting to CSV: {e}")
 
 # mapping function equivalent to C map function from Arduino
 def my_map(x, in_min, in_max, out_min, out_max):
     return int((x-in_min) * (out_max-out_min) / (in_max-in_min) + out_min)
 
 def measure_light(hsvImg):
-    #Determine luminance level of monitored area 
+    #Determine luminance level of monitored area
     #returns the median from the histogram which contains 0 - 255 levels
     hist = cv2.calcHist([hsvImg], [2], None, [256],[0,255])
-    windowsize = (hsvImg.size)/3   #There are 3 pixels per HSV value 
+    windowsize = (hsvImg.size)/3   #There are 3 pixels per HSV value
     count = 0
     sum = 0
     print (windowsize)
@@ -62,7 +56,7 @@ def measure_light(hsvImg):
         count +=1    
         if (sum > windowsize/2):   #test for median
             break
-    return count   
+    return count  
 
 #Reciprocal function curve to give a smaller number for bright light and a bigger number for low light
 def get_save_buffer(light):
@@ -74,7 +68,7 @@ def get_min_area(light):
     if (light > 10):
         light = 10;
     area =int((1000 * math.sqrt(light - 1)) + 100)
-    print("min area= " + str(area)) 
+    print("min area= " + str(area))
     return area
 
 def get_threshold(light):
@@ -90,41 +84,31 @@ def get_threshold(light):
     print("threshold= " + str(threshold))
     return threshold
 
-def get_image_filename(cap_time):
-    return os.path.join('images', "car_at_" + cap_time.strftime("%Y%m%d_%H%M%S") + ".jpg")
-
 def store_image():
-    # timestamp the image - 
+    # timestamp the image -
     global cap_time, image, mean_speed
     cv2.putText(image, cap_time.strftime("%A %d %B %Y %I:%M:%S%p"),
     (10, image.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 1)
     # write the speed: first get the size of the text
     size, base = cv2.getTextSize( "%.0f mph" % mean_speed, cv2.FONT_HERSHEY_SIMPLEX, 2, 3)
     # then center it horizontally on the image
-    cntr_x = int((IMAGEWIDTH - size[0]) / 2) 
+    cntr_x = int((IMAGEWIDTH - size[0]) / 2)
     cv2.putText(image, "%.0f mph" % mean_speed,
     (cntr_x , int(IMAGEHEIGHT * 0.2)), cv2.FONT_HERSHEY_SIMPLEX, 2.00, (0, 255, 0), 3)
     # and save the image to disk
-    cv2.imwrite(get_image_filename(cap_time),image)
+    imageFilename = "car_at_" + cap_time.strftime("%Y%m%d_%H%M%S") + ".jpg"
+    image_path = "/home/pi/images/" + imageFilename
+    cv2.imwrite(image_path, image)
 
 def store_traffic_data():
-    global cap_time, mean_speed, direction, counter, sd, client, sheet
+    global cap_time, mean_speed, direction, counter, sd, client
 
-    formatted_date = cap_time.strftime("%Y-%m-%d %H:%M:%S:%f")
-    file_name = get_image_filename(cap_time)
-    csvString=(formatted_date + ','+("%.0f" % mean_speed) + ',' +\
-    ("%d" % direction) + ',' + ("%d" % counter) + ','+ ("%d" % sd) +\
-    ',' + file_name)
+    csvString=(cap_time.strftime("%Y-%m-%d") + ' ' +\
+    cap_time.strftime('%H:%M:%S:%f')+','+("%.0f" % mean_speed) + ',' +\
+    ("%d" % direction) + ',' + ("%d" % counter) + ','+ ("%d" % sd))
 
     record_speed(csvString)
-
-    if SAVE_GOOGLE:
-        try:
-           data = [formatted_date, mean_speed, direction, counter, sd, file_name]
-           print(data)
-           sheet.append_row(data)
-        except Exception as e:
-            print(e)
+    print("âœ… Storing Traffic Data:", csvString)
 
     jsonstring = '{"created_at":'+'"'+ cap_time.strftime("%Y-%m-%d")+\
         ' ' + cap_time.strftime('%H:%M:%S:%f')+'"' +\
@@ -133,15 +117,14 @@ def store_traffic_data():
         ',"field3":' + ("%d" % counter) +\
         ',"field4":' + ("%.0f" % sd) +\
         '}'
-    # client.publish('traffic', jsonstring)  #Publish MQTT data
-    
-    
+#    client.publish('traffic', jsonstring)  #Publish MQTT data
+   
+   
 # define some constants
-L2R_DISTANCE = 49.3  # Adi's room <---- enter your distance-to-road value for cars going left to right here
-R2L_DISTANCE = 61.85  # Adi's room <---- enter your distance-to-road value for cars going left to right here
-MIN_SPEED_IMAGE = 40  #<---- enter the minimum speed for saving images
+L2R_DISTANCE = 43  #<---- enter your distance-to-road value for cars going left to right here
+R2L_DISTANCE = 50  #<---- enter your distance-to-road value for cars going left to right here
+MIN_SPEED_IMAGE = 10  #<---- enter the minimum speed for saving images
 SAVE_CSV = True  #<---- record the results in .csv format in carspeed_(date).csv
-SAVE_GOOGLE = True
 MIN_SPEED_SAVE = 10  #<---- enter the minimum speed for publishing to MQTT broker and saving to CSV
 MAX_SPEED_SAVE = 80  #<---- enter the maximum speed for publishing to MQTT broker and saving to CSV
 
@@ -151,7 +134,7 @@ BLURSIZE = (15,15)
 IMAGEWIDTH = 1024
 IMAGEHEIGHT = 592
 RESOLUTION = [IMAGEWIDTH,IMAGEHEIGHT]
-FOV = 62.2 # Pi Camera v2 is wider
+FOV = 53.50 #62.2  Pi Camera v2 is wider
 FPS = 30
 SHOW_BOUNDS = True
 SHOW_IMAGE = True
@@ -169,23 +152,14 @@ MIN_SAVE_BUFFER = 2
 # construct the argument parser and parse the arguments
 ap = argparse.ArgumentParser()
 ap.add_argument("-ulx", "--upper_left_x", required=True,
-    help="upper left x coord")
+help="upper left x coord")
 ap.add_argument("-uly", "--upper_left_y", required=True,
-    help="upper left y coord")
+help="upper left y coord")
 ap.add_argument("-lrx", "--lower_right_x", required=True,
-    help="lower right x coord")
+help="lower right x coord")
 ap.add_argument("-lry", "--lower_right_y", required=True,
-    help="lower right y coord")
+help="lower right y coord")
 args = vars(ap.parse_args())
-
-if SAVE_GOOGLE:
-    # use creds to create a client to interact with the Google Drive API
-    # and find a google sheet
-    # install these packages with `pip install gspread oauth2client`
-    scope = ['https://spreadsheets.google.com/feeds']
-    creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key("1lkBEF47bZitntTi2LzVFpSSxjDKxUZnH9W0J1vbbGMY").worksheet("Data")
 
 upper_left_x = int(args["upper_left_x"]);
 upper_left_y = int(args["upper_left_y"]);
@@ -212,9 +186,9 @@ print("R2L Image width in feet {} at {} from camera".format("%.0f" % r2l_frame_w
 # initial_x holds the x value when motion was first detected
 # last_x holds the last x value before tracking was was halted
 # depending upon the direction of travel, the front of the
-# vehicle is either at x, or at x+w 
+# vehicle is either at x, or at x+w
 # (tracking_end_time - tracking_start_time) is the elapsed time
-# from these the speed is calculated and displayed 
+# from these the speed is calculated and displayed
  
 
 #Initialisation
@@ -223,7 +197,7 @@ direction = UNKNOWN
 initial_x = 0
 last_x = 0
 #initialise.
-cap_time = datetime.datetime.now()   
+cap_time = datetime.datetime.now()  
 #pixel width at left and right of window to detect end of tracking
 savebuffer = MIN_SAVE_BUFFER  
  
@@ -240,40 +214,41 @@ tracking = False
 text_on_image = 'No cars'
 prompt = ''
 broker_address = 'emonpi'
-save_image = False
+save_image = True
 t1 = 0.0  #timer
 t2 = 0.0  #timer
 lightlevel = 0
 adjusted_threshold = THRESHOLD
 adjusted_min_area = MIN_AREA
 
+picam2 = Picamera2()
+video_config = picam2.create_video_configuration(
+    main={"size": RESOLUTION, "format": "BGR888"},
+    controls={"FrameRate": FPS}
+)
+picam2.configure(video_config)
+
+#picam2.set_controls({"AfMode": 1})  # Optional: autofocus
+picam2.start()
+time.sleep(0.9)  # Let camera warm up
 
 
-# initialise the camera. 
-# Adjust vflip and hflip to reflect your camera's orientation
-camera = PiCamera()
-camera.resolution = RESOLUTION
-camera.framerate = FPS
-camera.vflip = False
-camera.hflip = False
-
-rawCapture = PiRGBArray(camera, size=camera.resolution)
-# allow the camera to warm up
-time.sleep(0.9)
 
 # create an image window and place it in the upper left corner of the screen
 cv2.namedWindow("Speed Camera")
 cv2.moveWindow("Speed Camera", 10, 40)
  
 #Create MQTT client and connect
-# client = mqtt.Client('traffic_cam')
-# client.username_pw_set('xxxxxx', password='xxxxxxxxxxxxx')
-# client.connect(broker_address)
-# client.loop_start()
+#client = mqtt.Client('traffic_cam')
+#client.username_pw_set('xxxxxx', password='xxxxxxxxxxxxx')
+#client.connect(broker_address)
+#client.loop_start()
 
 if SAVE_CSV:
-    csvfileout = os.path.join('data', "carspeed_{}.csv".format(datetime.datetime.now().strftime("%Y%m%d_%H%M")))
-    record_speed('DateTime,Speed,Direction, Counter,SD, Image,')
+    os.makedirs("home/pi/csv", exist_ok=True)
+    csvfileout = "/home/pi/csv/carspeed_{}.csv".format(datetime.datetime.now().strftime("%Y%m%d_%H%M"))
+    record_speed('DateTime,Speed,Direction, Counter,SD')
+    print(f"Saving to CSV: {csvfileout}")
 else:
     csvfileout = ''
      
@@ -288,15 +263,13 @@ print(" lower_right_y {}".format(lower_right_y))
 print(" monitored_width {}".format(monitored_width))
 print(" monitored_height {}".format(monitored_height))
 print(" monitored_area {}".format(monitored_width * monitored_height))
-
+while True:
+    image = picam2.capture_array()
  
 # capture frames from the camera (using capture_continuous.
 #   This keeps the picamera in capture mode - it doesn't need
 #   to prep for each frame's capture.
-for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=True):
-    # grab the raw NumPy array representing the image 
-    image = frame.array
- 
+
     # crop area defined by [y1:y2,x1:x2]
     gray = image[upper_left_y:lower_right_y,upper_left_x:lower_right_x]
     # capture colour for later when measuring light levels
@@ -308,9 +281,9 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
     # if the base image has not been defined, initialize it
     if base_image is None:
         base_image = gray.copy().astype("float")
-        rawCapture.truncate(0)
+        
         cv2.imshow("Speed Camera", image)
-  
+ 
 
     if lightlevel == 0:   #First pass through only
         #Set threshold and min area and save_buffer based on light readings
@@ -326,20 +299,20 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
     # white
     frameDelta = cv2.absdiff(gray, cv2.convertScaleAbs(base_image))
     thresh = cv2.threshold(frameDelta, adjusted_threshold, 255, cv2.THRESH_BINARY)[1]
-    
+   
     # dilate the thresholded image to fill in any holes, then find contours
     # on thresholded image
     thresh = cv2.dilate(thresh, None, iterations=2)
-    (_, cnts, _) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+    cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
 
-    # look for motion 
+    # look for motion
     motion_found = False
     biggest_area = 0
     # examine the contours, looking for the largest one
     for c in cnts:
         (x1, y1, w1, h1) = cv2.boundingRect(c)
         # get an approximate area of the contour
-        found_area = w1*h1 
+        found_area = w1*h1
         # find the largest bounding rectangle
         if (found_area > adjusted_min_area) and (found_area > biggest_area):  
             biggest_area = found_area
@@ -362,21 +335,21 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
             initial_w = w
             initial_time = timestamp
             last_mph = 0
-        
+       
             #Initialise array for storing speeds
             speeds = np.array([])
             sd=0  #Initialise standard deviation
-            
+           
             text_on_image = 'Tracking'
             counter = 0   # use to test later if saving with too few data points    
-            car_gap = secs_diff(initial_time, cap_time) 
+            car_gap = secs_diff(initial_time, cap_time)
             print("initial time = "+str(initial_time) + " " + "cap_time =" + str(cap_time) + " gap= " +\
                  str(car_gap) + " initial x= " + str(initial_x) + " initial_w= " + str(initial_w))
             print(text_on_image)
             print("x-chg    Secs      MPH  x-pos width  BA DIR Count time")
             # if gap between cars too low then probably seeing tail lights of current car
             #but I might need to tweek this if find I'm not catching fast cars
-            if (car_gap<TOO_CLOSE):   
+            if (car_gap<TOO_CLOSE):  
                 state = WAITING
                 print("too close")
         else:  #state != WAITING
@@ -388,20 +361,20 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                 text_on_image = 'No Car Detected'
                 motion_found = False
                 biggest_area = 0
-                rawCapture.truncate(0)
+                
                 base_image = None
                 print('Resetting')
-                continue             
+                continue            
 
-            if state == TRACKING:       
+            if state == TRACKING:      
                 if x >= last_x:
                     direction = LEFT_TO_RIGHT
                     abs_chg = (x + w) - (initial_x + initial_w)
                     mph = get_speed(abs_chg,l2r_ftperpixel,secs)
                 else:
                     direction = RIGHT_TO_LEFT
-                    abs_chg = initial_x - x     
-                    mph = get_speed(abs_chg,r2l_ftperpixel,secs)           
+                    abs_chg = initial_x - x    
+                    mph = get_speed(abs_chg,r2l_ftperpixel,secs)          
 
                 counter+=1   #Increment counter
 
@@ -418,46 +391,46 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                 else:
                     print("{0:4d}  {1:7.2f}  {2:7.0f}   {3:4d}  {4:4d} {5:4d} {6:1d} {7:1d} {8:%H%M%S%f}". \
                     format(abs_chg,secs,mph,x,w,biggest_area, direction,counter, timestamp))
-                
+               
                 real_y = upper_left_y + y
                 real_x = upper_left_x + x
-              
+             
 
                 # is front of object outside the monitired boundary? Then write date, time and speed on image
-                # and save it 
+                # and save it
                 if ((x <= adjusted_save_buffer) and (direction == RIGHT_TO_LEFT)) \
                         or ((x+w >= monitored_width - adjusted_save_buffer) \
                         and (direction == LEFT_TO_RIGHT)):
-                    
+                   
                     #you need at least 2 data points to calculate a mean and we're deleting one on line below
-                    if (counter > 2): 
+                    if (counter > 2):
                         mean_speed = np.mean(speeds[:-1])   #Mean of all items except the last one
                         sd = np.std(speeds[:-1])  #SD of all items except the last one
                     elif (counter > 1):
                         mean_speed = speeds[-1] # use the last element in the array
                         sd = 99 # Set it to a very high value to highlight it's not to be trusted.
                     else:
-                        mean_speed = 0 #ignore it 
+                        mean_speed = 0 #ignore it
                         sd = 0
-                    
-                    print("numpy mean= " + "%.0f" % mean_speed)   
+                   
+                    print("numpy mean= " + "%.0f" % mean_speed)  
                     print("numpy SD = " + "%.0f" % sd)
 
-                    #Captime used for mqtt, csv, image filename. 
-                    cap_time = datetime.datetime.now()   
+                    #Captime used for mqtt, csv, image filename.
+                    cap_time = datetime.datetime.now()  
 
-                    # save the image but only if there is light and above the min speed for images 
+                    # save the image but only if there is light and above the min speed for images
                     if (mean_speed > MIN_SPEED_IMAGE) and (lightlevel > 1) :    
                         store_image()
-                    
+                   
                     # save the data if required and above min speed for data
-                    if (SAVE_CSV or SAVE_GOOGLE) and mean_speed > MIN_SPEED_SAVE and mean_speed < MAX_SPEED_SAVE:
+                    if SAVE_CSV and mean_speed > MIN_SPEED_SAVE and mean_speed < MAX_SPEED_SAVE:
                         store_traffic_data()
-                    
+                   
                     counter = 0
                     state = SAVING
                     print("saving")  #debug                    
-                # if the object hasn't reached the end of the monitored area, just remember the speed 
+                # if the object hasn't reached the end of the monitored area, just remember the speed
                 # and its last position
                 last_mph = mph
                 last_x = x
@@ -465,7 +438,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
         # No motion detected
         if state == TRACKING:
             #Last frame has skipped the buffer zone    
-            if (counter > 2): 
+            if (counter > 2):
                 mean_speed = np.mean(speeds[:-1])   #Mean of all items except the last one
                 sd = np.std(speeds[:-1])  #SD of all items except the last one
                 print("missed but saving")
@@ -474,10 +447,10 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                 sd = 99 # Set it to a very high value to highlight it's not to be trusted.
                 print("missed but saving")
             else:
-                mean_speed = 0 #ignore it 
+                mean_speed = 0 #ignore it
                 sd = 0
-                    
-            print("numpy mean= " + "%.0f" % mean_speed)   
+                   
+            print("numpy mean= " + "%.0f" % mean_speed)  
             print("numpy SD = " + "%.0f" % sd)
 
             cap_time = datetime.datetime.now()
@@ -492,7 +465,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
             text_on_image = 'No Car Detected'
             counter = 0
             print(text_on_image)
-            
+           
     # only update image and wait for a keypress when waiting for a car
     # This is required since waitkey slows processing.
     if (state == WAITING):    
@@ -512,7 +485,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
         if SHOW_IMAGE:
             prompt_on_image(prompt)
             cv2.imshow("Speed Camera", image)
-            
+           
         # Adjust the base_image as lighting changes through the day
         if state == WAITING:
             last_x = 0
@@ -530,14 +503,15 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                 last_lightlevel = lightlevel
         state=WAITING
         key = cv2.waitKey(1) & 0xFF
-      
+     
         # if the `q` key is pressed, break from the loop and terminate processing
         if key == ord("q"):
             client.loop_stop()
-            # client.disconnect()   ##disconnect from mqtt broker
+            client.disconnect()   ##disconnect from mqtt broker
             break
          
     # clear the stream in preparation for the next frame
-    rawCapture.truncate(0)
+    
 # cleanup the camera and close any open windows
 cv2.destroyAllWindows()
+
